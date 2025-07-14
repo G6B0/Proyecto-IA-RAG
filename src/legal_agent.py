@@ -1,8 +1,20 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Sequence
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from langchain_core.prompts import ChatPromptTemplate
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.graph.message import add_messages
+from langgraph.graph import START, StateGraph
+from typing_extensions import Annotated, TypedDict
 from .config import Config
 from .rag_system import RAGSystem
+import uuid
+
+class ConversationState(TypedDict):
+    """Estado de la conversación para LangGraph"""
+    messages: Annotated[Sequence[BaseMessage], add_messages]
+    contextualized_query: str
+    original_query: str
+    sources: Dict[str, List[str]]
 
 class LegalAgent:
     """Agente legal con capacidad de mantener historial de conversación"""
@@ -10,105 +22,57 @@ class LegalAgent:
     def __init__(self):
         self.config = Config()
         self.rag_system = RAGSystem()
-        self.chat_history: List[BaseMessage] = []
+        self.app = None
+        self.memory = MemorySaver()
+        self.current_thread_id = None
         self.session_initialized = False
     
     def initialize(self):
         """Inicializa el agente y el sistema RAG"""
         print("Inicializando agente legal...")
         self.rag_system.initialize()
+        self._build_graph()
         self.session_initialized = True
+        # Crear un thread_id único para esta sesión
+        self.current_thread_id = str(uuid.uuid4())
         print("Agente legal listo para usar")
-    
-    def _format_chat_history(self) -> str:
-        """
-        Formatea el historial de chat para incluir en prompts
-        
-        Returns:
-            str: Historial formateado
-        """
-        if not self.chat_history:
-            return "No hay historial de conversación previo."
-        
-        formatted_history = []
-        for message in self.chat_history[-6:]:  # Últimas 6 mensajes para no sobrecargar
-            if isinstance(message, HumanMessage):
-                formatted_history.append(f"Usuario: {message.content}")
-            elif isinstance(message, AIMessage):
-                formatted_history.append(f"Asistente: {message.content}")
-        
-        return "\n".join(formatted_history)
-    
-    def _should_contextualize(self, query: str) -> bool:
-        """
-        Determina si la consulta necesita contextualización
-        
-        Args:
-            query: Consulta del usuario
+
+    def _build_graph(self):
+        """Construye el grafo LangGraph para el agente legal"""
+        workflow = StateGraph(state_schema=ConversationState)
+
+        def process_query(state: ConversationState) -> ConversationState:
+            messages = state["messages"]
+            current_query = messages[-1].content if messages else ""
+
+            # Contextualizar usando mensajes anteriores
+            contextualized_query = self._contextualize_question(current_query, messages[:-1])
             
-        Returns:
-            bool: True si necesita contextualización
-        """
-        if not self.chat_history:
-            return False
+            # Generar respuesta RAG
+            rag_response = self.rag_system.generate_response(
+                contextualized_query,
+                self._format_message_history(messages)
+            )
+
+            # Formatear respuesta con fuentes
+            formatted_answer = self._format_answer_with_sources(
+                rag_response["answer"],
+                rag_response["sources"]
+            )
+
+            ai_message = AIMessage(content=formatted_answer)
+
+            return {
+                "messages": [ai_message],
+                "contextualized_query": contextualized_query,
+                "original_query": current_query,
+                "sources": rag_response["sources"]
+            }
         
-        # Palabras que indican referencia a conversación previa
-        context_indicators = [
-            "esto", "eso", "aquello", "anterior", "previo", "mencionado",
-            "dijiste", "explicaste", "hablamos", "comentaste", "también",
-            "además", "pero", "sin embargo", "y si", "qué pasa si",
-            "en ese caso", "entonces", "ahora", "después", "seguir"
-        ]
-        
-        query_lower = query.lower()
-        return any(indicator in query_lower for indicator in context_indicators)
-    
-    def _contextualize_question(self, query: str) -> str:
-        """
-        Contextualiza la pregunta usando el historial
-        
-        Args:
-            query: Consulta original
-            
-        Returns:
-            str: Consulta contextualizada
-        """
-        if not self._should_contextualize(query):
-            return query
-        
-        # Crear prompt para contextualización
-        prompt = ChatPromptTemplate.from_template(self.config.CONTEXTUALIZE_PROMPT)
-        
-        formatted_prompt = prompt.format(
-            chat_history=self._format_chat_history(),
-            question=query
-        )
-        
-        try:
-            response = self.rag_system.llm.invoke(formatted_prompt)
-            contextualized_query = response.content.strip()
-            
-            print(f"Consulta contextualizada: {contextualized_query}")
-            return contextualized_query
-            
-        except Exception as e:
-            print(f"Error en contextualización: {e}")
-            return query
-    
-    def _add_to_history(self, human_message: str, ai_message: str):
-        """
-        Añade mensajes al historial
-        
-        Args:
-            human_message: Mensaje del usuario
-            ai_message: Respuesta del asistente
-        """
-        self.chat_history.append(HumanMessage(content=human_message))
-        self.chat_history.append(AIMessage(content=ai_message))
-        
-        # Mantener historial manageable (últimas 20 mensajes)
-        if len(self.chat_history) > 20:
-            self.chat_history = self.chat_history[-20:]
+        workflow.add_edge(START, "process_query")
+        workflow.add_node("process_query", process_query)
+
+        self.app = workflow.compile(checkpointer=self.memory)
     
     def chat(self, query: str) -> Dict[str, Any]:
         """
@@ -125,32 +89,90 @@ class LegalAgent:
         
         print(f"\nProcesando consulta: {query}")
         
-        # Contextualizar la pregunta si es necesario
-        contextualized_query = self._contextualize_question(query)
+        # Crear mensaje humano
+        human_message = HumanMessage(content=query)
         
-        # Generar respuesta usando RAG
-        rag_response = self.rag_system.generate_response(
-            contextualized_query,
-            self._format_chat_history()
+        # Configuración del thread para persistencia
+        config = {"configurable": {"thread_id": self.current_thread_id}}
+        
+        # Invocar el grafo con el mensaje
+        response = self.app.invoke(
+            {"messages": [human_message]},
+            config=config
         )
         
-        # Formatear respuesta final
-        answer = rag_response["answer"]
-        sources = rag_response["sources"]
-        
-        # Añadir fuentes a la respuesta
-        formatted_answer = self._format_answer_with_sources(answer, sources)
-        
-        # Actualizar historial
-        self._add_to_history(query, formatted_answer)
-        
         return {
-            "answer": formatted_answer,
-            "sources": sources,
-            "contextualized_query": contextualized_query,
-            "original_query": query,
-            "chat_history_length": len(self.chat_history)
+            "answer": response["messages"][-1].content,
+            "sources": response["sources"],
+            "contextualized_query": response["contextualized_query"],
+            "original_query": response["original_query"],
         }
+    
+    def _contextualize_question(self, query: str, chat_history: List[BaseMessage]) -> str:
+        """
+        Contextualiza la pregunta actual basándose en el historial
+
+        Args:
+            query: Pregunta actual
+            chat_history: Historial de mensajes
+
+        Returns:
+            str: Pregunta contextualizada
+       """
+        
+        if not chat_history:
+            return query
+
+        try:
+            from langchain_core.prompts import ChatPromptTemplate
+
+            formatted_history = self._format_message_history(chat_history)
+
+            contextualize_prompt = ChatPromptTemplate.from_messages([
+                ("system", """Dado el historial de conversación y la pregunta más reciente del usuario, 
+                reformula la pregunta para que sea independiente y pueda entenderse sin el historial.
+
+                REGLAS:
+                1. NO respondas la pregunta, solo reformúlala
+                2. Incluye el contexto necesario del historial en la nueva pregunta
+                3. Mantén la intención original del usuario
+                4. Si la pregunta ya es independiente, devuélvela tal como está
+
+                HISTORIAL:
+                {chat_history}"""),
+                ("human", "Pregunta actual: {question}")
+            ])
+
+            messages = contextualize_prompt.format_messages(
+                chat_history=formatted_history,
+                question=query
+            )
+
+            response = self.rag_system.llm.invoke(messages)
+            return response.content.strip()
+
+        except Exception as e:
+            print(f"Error contextualizando pregunta: {e}")
+            return query
+
+    
+    def _format_message_history(self, messages: List[BaseMessage]) -> str:
+        """
+        Formatea el historial de mensajes para el sistema RAG
+        
+        Args:
+            messages: Lista de mensajes
+            
+        Returns:
+            str: Historial formateado
+        """
+        formatted_history = ""
+        for message in messages:
+            if isinstance(message, HumanMessage):
+                formatted_history += f"Usuario: {message.content}\n"
+            elif isinstance(message, AIMessage):
+                formatted_history += f"Asistente: {message.content}\n"
+        return formatted_history
     
     def _format_answer_with_sources(self, answer: str, sources: Dict[str, List[str]]) -> str:
         """
@@ -166,38 +188,52 @@ class LegalAgent:
         formatted_answer = answer
         
         # Añadir fuentes de artículos
-        if sources["articulos"]:
+        if sources.get("articulos"):
             formatted_answer += "\n\n**Artículos utilizados como fuente:**\n"
             for articulo in sources["articulos"]:
                 formatted_answer += f"- {articulo}\n"
         
         # Añadir fuentes de casos
-        if sources["casos"]:
+        if sources.get("casos"):
             formatted_answer += "\n**Casos judiciales utilizados como fuente:**\n"
             for caso in sources["casos"]:
                 formatted_answer += f"- {caso}\n"
         
         return formatted_answer
     
-    def clear_history(self):
-        self.chat_history = []
-        print("Historial de conversación limpiado")
-    
     def get_history(self) -> List[Dict[str, str]]:
         """
-        Obtiene el historial de conversación en formato legible
+        Obtiene el historial de conversación
         
         Returns:
-            List[Dict]: Historial formateado
+            List[Dict]: Historial de mensajes
         """
-        history = []
-        for message in self.chat_history:
-            if isinstance(message, HumanMessage):
-                history.append({"role": "user", "content": message.content})
-            elif isinstance(message, AIMessage):
-                history.append({"role": "assistant", "content": message.content})
+        if not self.session_initialized:
+            return []
         
-        return history
+        try:
+            config = {"configurable": {"thread_id": self.current_thread_id}}
+            # Obtener el estado actual del grafo
+            state = self.app.get_state(config)
+            
+            history = []
+            for message in state.values.get("messages", []):
+                if isinstance(message, HumanMessage):
+                    history.append({"role": "user", "content": message.content})
+                elif isinstance(message, AIMessage):
+                    history.append({"role": "assistant", "content": message.content})
+            
+            return history
+        except Exception as e:
+            print(f"Error obteniendo historial: {e}")
+            return []
+    
+    def clear_history(self):
+        """Limpia el historial de conversación"""
+        if self.session_initialized:
+            # Crear un nuevo thread_id para empezar de cero
+            self.current_thread_id = str(uuid.uuid4())
+            print("Historial limpiado")
     
     def get_status(self) -> Dict[str, Any]:
         """
@@ -208,8 +244,9 @@ class LegalAgent:
         """
         return {
             "initialized": self.session_initialized,
-            "chat_history_length": len(self.chat_history),
-            "rag_system_status": self.rag_system.get_status()
+            "thread_id": self.current_thread_id,
+            "rag_system_status": self.rag_system.get_status(),
+            "messages_count": len(self.get_history())
         }
     
     def save_conversation(self, filename: str):
@@ -225,6 +262,7 @@ class LegalAgent:
             
             conversation_data = {
                 "timestamp": datetime.now().isoformat(),
+                "thread_id": self.current_thread_id,
                 "conversation": self.get_history()
             }
             
@@ -249,16 +287,53 @@ class LegalAgent:
             with open(filename, 'r', encoding='utf-8') as f:
                 conversation_data = json.load(f)
             
-            # Reconstruir historial
-            self.chat_history = []
+            # Crear nuevo thread_id o usar el guardado
+            self.current_thread_id = conversation_data.get("thread_id", str(uuid.uuid4()))
+            
+            # Reconstruir historial en el grafo
+            config = {"configurable": {"thread_id": self.current_thread_id}}
+            
+            messages = []
             for message in conversation_data.get("conversation", []):
                 if message["role"] == "user":
-                    self.chat_history.append(HumanMessage(content=message["content"]))
+                    messages.append(HumanMessage(content=message["content"]))
                 elif message["role"] == "assistant":
-                    self.chat_history.append(AIMessage(content=message["content"]))
+                    messages.append(AIMessage(content=message["content"]))
+            
+            # Restaurar estado en el grafo
+            if messages:
+                # Crear un estado inicial con todos los mensajes
+                initial_state = {
+                    "messages": messages,
+                    "contextualized_query": "",
+                    "original_query": "",
+                    "sources": {"articulos": [], "casos": []}
+                }
+                
+                # Actualizar el estado del grafo
+                self.app.update_state(config, initial_state)
             
             print(f"Conversación cargada desde {filename}")
-            print(f"Mensajes cargados: {len(self.chat_history)}")
+            print(f"Mensajes cargados: {len(messages)}")
             
         except Exception as e:
             print(f"Error cargando conversación: {e}")
+    
+    def set_thread_id(self, thread_id: str):
+        """
+        Establece un thread_id específico para la conversación
+        
+        Args:
+            thread_id: ID del thread
+        """
+        self.current_thread_id = thread_id
+        print(f"Thread ID establecido: {thread_id}")
+    
+    def get_thread_id(self) -> str:
+        """
+        Obtiene el thread_id actual
+        
+        Returns:
+            str: Thread ID actual
+        """
+        return self.current_thread_id
