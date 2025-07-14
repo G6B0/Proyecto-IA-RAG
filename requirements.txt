@@ -1,0 +1,5 @@
+langchain-ollama
+langchain-core
+langchain-text-splitters
+pandas
+typing-extensions
