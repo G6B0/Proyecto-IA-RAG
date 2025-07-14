@@ -8,6 +8,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from src.legal_agent import LegalAgent
 
 class LegalAgentInterface:
+    """Interfaz interactiva para el agente legal"""
     
     def __init__(self):
         self.agent = LegalAgent()
@@ -31,6 +32,7 @@ class LegalAgentInterface:
         print("- '/guardar' - Guardar conversación")
         print("- '/cargar' - Cargar conversación")
         print("- '/estado' - Ver estado del sistema")
+        print("- '/thread' - Ver/cambiar thread de conversación")
         print("- '/salir' - Salir del programa")
         print("="*60)
     
@@ -65,13 +67,19 @@ class LegalAgentInterface:
         print("ESTADO DEL SISTEMA")
         print("="*40)
         print(f"Agente inicializado: {'Sí' if status['initialized'] else 'No'}")
-        print(f"Mensajes en historial: {status['chat_history_length']}")
+        print(f"Thread ID actual: {status.get('thread_id', 'N/A')}")
+        print(f"Mensajes en historial: {status.get('messages_count', 0)}")
         
         rag_status = status['rag_system_status']
-        print(f"Documentos de ley: {rag_status['law_docs_count']}")
-        print(f"Documentos de casos: {rag_status['case_docs_count']}")
-        print(f"Modelo LLM: {rag_status['config']['llm_model']}")
-        print(f"Modelo embeddings: {rag_status['config']['embedding_model']}")
+        print(f"Documentos de ley: {rag_status.get('law_docs_count', 'N/A')}")
+        print(f"Documentos de casos: {rag_status.get('case_docs_count', 'N/A')}")
+        
+        # Mostrar configuración si está disponible
+        if 'config' in rag_status:
+            config = rag_status['config']
+            print(f"Modelo LLM: {config.get('llm_model', 'N/A')}")
+            print(f"Modelo embeddings: {config.get('embedding_model', 'N/A')}")
+        
         print("="*40)
     
     def display_history(self):
@@ -85,6 +93,7 @@ class LegalAgentInterface:
         print("\n" + "="*50)
         print("HISTORIAL DE CONVERSACIÓN")
         print("="*50)
+        print(f"Thread ID: {self.agent.get_thread_id()}")
         
         for i, message in enumerate(history, 1):
             role = "Usuario" if message["role"] == "user" else "Asistente"
@@ -117,6 +126,24 @@ class LegalAgentInterface:
             print("Conversación cargada exitosamente")
         except Exception as e:
             print(f"Error cargando conversación: {e}")
+    
+    def show_thread_info(self):
+        """Muestra información del thread actual"""
+        thread_id = self.agent.get_thread_id()
+        history_count = len(self.agent.get_history())
+        
+        print(f"\nThread ID actual: {thread_id}")
+        print(f"Mensajes en historial: {history_count}")
+        
+        change = input("¿Quieres cambiar a otro thread? (s/n): ").lower().strip()
+        if change == 's':
+            new_thread = input("Nuevo thread ID (Enter para generar automático): ").strip()
+            if not new_thread:
+                import uuid
+                new_thread = str(uuid.uuid4())
+            
+            self.agent.set_thread_id(new_thread)
+            print(f"Cambiado a thread: {new_thread}")
     
     def process_command(self, user_input: str) -> bool:
         """
@@ -155,6 +182,10 @@ class LegalAgentInterface:
             self.display_status()
             return True
         
+        elif command == '/thread':
+            self.show_thread_info()
+            return True
+        
         elif command == '/salir':
             print("Hasta luego. Gracias por usar el Agente Legal RAG")
             self.running = False
@@ -163,7 +194,7 @@ class LegalAgentInterface:
         return False
     
     def run(self):
-        """ Interfaz """
+        """Ejecuta la interfaz interactiva"""
         try:
             # Mostrar bienvenida
             self.display_welcome()
@@ -202,7 +233,7 @@ class LegalAgentInterface:
                     # Mostrar información adicional si es relevante
                     if response["original_query"] != response["contextualized_query"]:
                         print(f"\nConsulta interpretada: {response['contextualized_query']}")
-                    
+                
                 except KeyboardInterrupt:
                     print("\n\nSaliendo del programa...")
                     self.running = False
@@ -219,7 +250,7 @@ class LegalAgentInterface:
             print("- ollama pull nomic-embed-text")
 
 def main():
-
+    """Función principal"""
     interface = LegalAgentInterface()
     interface.run()
 
