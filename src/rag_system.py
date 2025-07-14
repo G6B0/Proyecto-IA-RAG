@@ -1,10 +1,11 @@
 from typing import List, Dict, Any
 from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_core.documents import Document
-from langchain_core.vectorstores import InMemoryVectorStore
+from langchain_chroma import Chroma
 from langchain_core.prompts import ChatPromptTemplate
 from .config import Config
 from .data_loader import DataLoader
+import os
 
 class RAGSystem:
     """Sistema RAG para consultas legales con dual retrieval"""
@@ -27,22 +28,48 @@ class RAGSystem:
     def initialize(self):
         print("Inicializando sistema RAG...")
         
-        # Cargar documentos
-        law_docs, case_docs = self.data_loader.load_all_documents()
+        law_path = "./chroma_db"
+        cases_path = "./chroma_db"
+
+        os.makedirs(law_path, exist_ok=True)
+
+        db_exists = os.path.exists(os.path.join(law_path, "chroma.sqlite3"))
         
-        # Crear vector stores
-        print("Creando vector stores...")
-        self.vector_store_law = InMemoryVectorStore(self.embeddings)
-        self.vector_store_cases = InMemoryVectorStore(self.embeddings)
-        
-        # Agregar documentos a vector stores
-        if law_docs:
-            self.vector_store_law.add_documents(law_docs)
-            print(f"Vector store de leyes: {len(law_docs)} documentos")
-        
-        if case_docs:
-            self.vector_store_cases.add_documents(case_docs)
-            print(f"Vector store de casos: {len(case_docs)} documentos")
+        if db_exists:
+            print("Bases vectoriales existentes detectadas. Cargando desde disco...")
+
+            self.vector_store_law = Chroma(
+                collection_name="leyes_collection",
+                embedding_function=self.embeddings,
+                persist_directory=law_path
+            )
+            self.vector_store_cases = Chroma(
+                collection_name="fallos_collection",
+                embedding_function=self.embeddings,
+                persist_directory=cases_path
+            )
+        else:
+            print("Bases vectoriales no encontradas. Procesando documentos y creando nuevas...")
+            law_docs, case_docs = self.data_loader.load_all_documents()
+
+            self.vector_store_law = Chroma(
+                collection_name="leyes_collection",
+                embedding_function=self.embeddings,
+                persist_directory=law_path
+            )
+            if law_docs:
+                self.vector_store_law.add_documents(law_docs)
+                print(f"Vector store de leyes: {len(law_docs)} documentos")
+
+            self.vector_store_cases = Chroma(
+                collection_name="fallos_collection",
+                embedding_function=self.embeddings,
+                persist_directory=cases_path
+            )
+            if case_docs:
+                self.vector_store_cases.add_documents(case_docs)
+                print(f"Vector store de casos: {len(case_docs)} documentos")
+
         
         self.initialized = True
         print("Sistema RAG inicializado correctamente")
@@ -217,7 +244,7 @@ class RAGSystem:
         """
         return {
             "initialized": self.initialized,
-            "law_docs_count": len(self.vector_store_law.docstore._store) if self.vector_store_law else 0,
-            "case_docs_count": len(self.vector_store_cases.docstore._store) if self.vector_store_cases else 0,
+            "law_docs_count": self.vector_store_law._collection.count(),
+            "case_docs_count": self.vector_store_cases._collection.count(),
             "config": self.config.get_config()
         }
