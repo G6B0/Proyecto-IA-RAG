@@ -33,6 +33,7 @@ class LegalAgentInterface:
         print("- '/cargar' - Cargar conversación")
         print("- '/estado' - Ver estado del sistema")
         print("- '/thread' - Ver/cambiar thread de conversación")
+        print("- '/reclamo' - Reiniciar sistema de reclamos")
         print("- '/salir' - Salir del programa")
         print("="*60)
     
@@ -79,6 +80,24 @@ class LegalAgentInterface:
             config = rag_status['config']
             print(f"Modelo LLM: {config.get('llm_model', 'N/A')}")
             print(f"Modelo embeddings: {config.get('embedding_model', 'N/A')}")
+        
+        # Mostrar estado del sistema de reclamos
+        print("\n" + "-"*40)
+        print("ESTADO DEL SISTEMA DE RECLAMOS")
+        print("-"*40)
+        claim_mode = status.get('claim_mode', False)
+        claim_status = status.get('claim_status', 'not_started')
+        
+        print(f"Modo reclamo activo: {'Sí' if claim_mode else 'No'}")
+        print(f"Estado actual: {claim_status.replace('_', ' ').title()}")
+        
+        if status.get('pending_question'):
+            print(f"Pregunta pendiente: {status['pending_question'][:50]}...")
+        
+        if status.get('claim_data'):
+            claim_data = status['claim_data']
+            completion = len([v for v in claim_data.values() if v]) / len(claim_data) * 100
+            print(f"Datos recopilados: {completion:.0f}%")
         
         print("="*40)
     
@@ -184,6 +203,11 @@ class LegalAgentInterface:
         
         elif command == '/thread':
             self.show_thread_info()
+            return True
+        
+        elif command == '/reclamo':
+            self.agent.reset_claim_mode()
+            print("Sistema de reclamos reiniciado")
             return True
         
         elif command == '/salir':
