@@ -77,7 +77,7 @@ class RAGSystem:
             )
         else:
             print("Bases vectoriales no encontradas. Procesando documentos y creando nuevas...")
-            law_docs, case_docs = self.data_loader.load_all_documents()
+            law_docs, case_docs = self.data_loader.load_all_documents(case_batch_size=100)
 
             self.vector_store_law = Chroma(
                 collection_name="leyes_collection",
@@ -94,7 +94,35 @@ class RAGSystem:
                 persist_directory=cases_path
             )
             if case_docs:
-                self.vector_store_cases.add_documents(case_docs)
+                # Agregar documentos por lotes
+                batch_size = 5000  # Menor que el límite de 5461
+                total_docs = len(case_docs)
+    
+                print(f"Agregando {total_docs} documentos al vector store en lotes de {batch_size}")
+    
+                for i in range(0, total_docs, batch_size):
+                    batch_end = min(i + batch_size, total_docs)
+                    batch = case_docs[i:batch_end]
+        
+                    batch_num = (i // batch_size) + 1
+                    total_batches = (total_docs + batch_size - 1) // batch_size
+        
+                    print(f"Procesando lote {batch_num}/{total_batches}: documentos {i} a {batch_end}")
+        
+                    try:
+                        self.vector_store_cases.add_documents(batch)
+                        print(f"Lote {batch_num} agregado exitosamente")
+                    except Exception as e:
+                        print(f"Error agregando lote {batch_num}: {e}")
+                        # Si falla, intenta con un batch más pequeño
+                        if batch_size > 1000:
+                            smaller_batch_size = 1000
+                            for j in range(0, len(batch), smaller_batch_size):
+                                smaller_batch = batch[j:j+smaller_batch_size]
+                                self.vector_store_cases.add_documents(smaller_batch)
+                        else:
+                            raise e
+    
                 print(f"Vector store de casos: {len(case_docs)} documentos")
 
         self.initialized = True
