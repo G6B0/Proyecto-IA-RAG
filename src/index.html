@@ -8,7 +8,7 @@
         textarea { width: 100%; height: 100px; margin-bottom: 10px; font-size: 16px; }
         button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
         #response { margin-top: 20px; white-space: pre-wrap; background: #f0f0f0; padding: 15px; border-radius: 5px; }
-        #sources { margin-top: 10px; font-size: 14px; color: #555; }
+        #sources { margin-top: 10px; font-size: 14px; color: #555; white-space: pre-wrap; }
     </style>
 </head>
 <body>
@@ -48,22 +48,22 @@ async function ask() {
 
         const data = await res.json();
 
-        if (data.answer) {
-            responseDiv.textContent = data.answer;
+        if (data.respuesta) {
+            responseDiv.textContent = data.respuesta;
         } else {
             responseDiv.textContent = "No se pudo obtener respuesta.";
         }
 
-        // Mostrar fuentes si hay
         let fuentesText = "";
         if (data.sources) {
             if (data.sources.articulos && data.sources.articulos.length) {
-                fuentesText += "** Artículos citados: **\n" + data.sources.articulos.join("\n") + "\n\n";
+                fuentesText += "** Artículos citados:**\n" + data.sources.articulos.join("\n") + "\n\n";
             }
             if (data.sources.casos && data.sources.casos.length) {
-                fuentesText += "** Casos judiciales citados: **\n" + data.sources.casos.join("\n");
+                fuentesText += "** Casos judiciales citados:**\n" + data.sources.casos.join("\n");
             }
         }
+
         sourcesDiv.textContent = fuentesText;
 
     } catch (error) {
