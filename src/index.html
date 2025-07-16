@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <title>Agente Legal RAG - Consulta</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 600px; margin: 40px auto; }
+        textarea { width: 100%; height: 100px; margin-bottom: 10px; font-size: 16px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        #response { margin-top: 20px; white-space: pre-wrap; background: #f0f0f0; padding: 15px; border-radius: 5px; }
+        #sources { margin-top: 10px; font-size: 14px; color: #555; }
+    </style>
+</head>
+<body>
+    <h1>Agente Legal RAG - Consulta Ley del Consumidor</h1>
+    <textarea id="question" placeholder="Escribe tu consulta aquí..."></textarea>
+    <br />
+    <button onclick="ask()">Consultar</button>
+
+    <div id="response"></div>
+    <div id="sources"></div>
+
+<script>
+async function ask() {
+    const question = document.getElementById("question").value.trim();
+    const responseDiv = document.getElementById("response");
+    const sourcesDiv = document.getElementById("sources");
+
+    responseDiv.textContent = "Consultando...";
+    sourcesDiv.textContent = "";
+
+    if (!question) {
+        responseDiv.textContent = "Por favor, escribe una pregunta.";
+        return;
+    }
+
+    try {
+        const res = await fetch("http://localhost:8000/ask", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ pregunta: question })
+        });
+
+        if (!res.ok) {
+            responseDiv.textContent = "Error al comunicarse con el servidor.";
+            return;
+        }
+
+        const data = await res.json();
+
+        if (data.answer) {
+            responseDiv.textContent = data.answer;
+        } else {
+            responseDiv.textContent = "No se pudo obtener respuesta.";
+        }
+
+        // Mostrar fuentes si hay
+        let fuentesText = "";
+        if (data.sources) {
+            if (data.sources.articulos && data.sources.articulos.length) {
+                fuentesText += "** Artículos citados: **\n" + data.sources.articulos.join("\n") + "\n\n";
+            }
+            if (data.sources.casos && data.sources.casos.length) {
+                fuentesText += "** Casos judiciales citados: **\n" + data.sources.casos.join("\n");
+            }
+        }
+        sourcesDiv.textContent = fuentesText;
+
+    } catch (error) {
+        responseDiv.textContent = "Error: " + error.message;
+    }
+}
+</script>
+
+</body>
+</html>
