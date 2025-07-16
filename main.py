@@ -230,9 +230,20 @@ class LegalAgentInterface:
                     print("="*60)
                     print(response["answer"])
                     
-                    # Mostrar información adicional si es relevante
-                    if response["original_query"] != response["contextualized_query"]:
+                    # Mostrar interpretación solo si existe (fase 3)
+                    if response.get("contextualized_query") and response["original_query"] != response["contextualized_query"]:
                         print(f"\nConsulta interpretada: {response['contextualized_query']}")
+
+                    # Mostrar fuentes si existen (fase 3)
+                    if response.get("sources"):
+                        if response["sources"].get("articulos"):
+                            print("\nArtículos utilizados como fuente:")
+                            for art in response["sources"]["articulos"]:
+                                    print(f"- {art}")
+                        if response["sources"].get("casos"):
+                            print("\nCasos judiciales utilizados como fuente:")
+                            for caso in response["sources"]["casos"]:
+                                print(f"- {caso}")
                 
                 except KeyboardInterrupt:
                     print("\n\nSaliendo del programa...")
