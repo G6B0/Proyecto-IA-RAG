@@ -17,8 +17,6 @@ class ConversationState(TypedDict):
     sources: Dict[str, List[str]]
 
 class LegalAgent:
-    """Agente legal con capacidad de mantener historial de conversación"""
-    
     def __init__(self):
         self.config = Config()
         self.rag_system = RAGSystem()
@@ -26,40 +24,33 @@ class LegalAgent:
         self.memory = MemorySaver()
         self.current_thread_id = None
         self.session_initialized = False
-    
+
+        self.phase = 1  # 1: recolectar datos, 3: ejecutar RAG
+
     def initialize(self):
-        """Inicializa el agente y el sistema RAG"""
         print("Inicializando agente legal...")
         self.rag_system.initialize()
         self._build_graph()
         self.session_initialized = True
-        # Crear un thread_id único para esta sesión
         self.current_thread_id = str(uuid.uuid4())
         print("Agente legal listo para usar")
 
     def _build_graph(self):
-        """Construye el grafo LangGraph para el agente legal"""
         workflow = StateGraph(state_schema=ConversationState)
 
         def process_query(state: ConversationState) -> ConversationState:
             messages = state["messages"]
             current_query = messages[-1].content if messages else ""
 
-            # Contextualizar usando mensajes anteriores
             contextualized_query = self._contextualize_question(current_query, messages[:-1])
-            
-            # Generar respuesta RAG
             rag_response = self.rag_system.generate_response(
                 contextualized_query,
                 self._format_message_history(messages)
             )
-
-            # Formatear respuesta con fuentes
             formatted_answer = self._format_answer_with_sources(
                 rag_response["answer"],
                 rag_response["sources"]
             )
-
             ai_message = AIMessage(content=formatted_answer)
 
             return {
@@ -68,46 +59,82 @@ class LegalAgent:
                 "original_query": current_query,
                 "sources": rag_response["sources"]
             }
-        
+
         workflow.add_edge(START, "process_query")
         workflow.add_node("process_query", process_query)
 
         self.app = workflow.compile(checkpointer=self.memory)
-    
+
     def chat(self, query: str) -> Dict[str, Any]:
-        """
-        Procesa una consulta del usuario manteniendo el contexto
-        
-        Args:
-            query: Consulta del usuario
-            
-        Returns:
-            Dict: Respuesta completa con contexto
-        """
         if not self.session_initialized:
             raise RuntimeError("Agente no inicializado. Llama a initialize() primero")
+
+        print(f"\nProcesando consulta (fase {self.phase}): {query}")
+
+        # Comando para ejecutar RAG
+        if query.lower().strip() == "/finalizar":
+            self.phase = 3
+            return self._execute_phase_3()
         
-        print(f"\nProcesando consulta: {query}")
-        
-        # Crear mensaje humano
-        human_message = HumanMessage(content=query)
-        
-        # Configuración del thread para persistencia
+        if self.phase == 1:
+            # Guardar directamente el mensaje en el historial del grafo
+            # Obtener estado actual
+            config = {"configurable": {"thread_id": self.current_thread_id}}
+            state = self.app.get_state(config)
+
+            # Agregar el nuevo mensaje humano al historial actual
+            current_messages = list(state.values.get("messages", []))
+            current_messages.append(HumanMessage(content=query))
+
+            # Actualizar estado con los mensajes nuevos
+            new_state = {
+                "messages": current_messages,
+                "contextualized_query": "",
+                "original_query": "",
+                "sources": {"articulos": [], "casos": []}
+            }
+            self.app.update_state(config, new_state)
+
+            return {
+                "answer": "Gracias por la información. Sigue contándome o escribe '/finalizar' para que prepare la respuesta."
+            }
+
+    def _execute_phase_3(self):
         config = {"configurable": {"thread_id": self.current_thread_id}}
-        
-        # Invocar el grafo con el mensaje
-        response = self.app.invoke(
-            {"messages": [human_message]},
-            config=config
-        )
-        
+        state = self.app.get_state(config)
+        messages = state.values.get("messages", [])
+
+        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+        concatenated_text = " ".join(m.content for m in human_messages)
+
+        contextualized = self._contextualize_question(concatenated_text, human_messages)
+        human_message = HumanMessage(content=contextualized)
+
+        response = self.app.invoke({"messages": [human_message]}, config=config)
+
+        self.app.update_state(config, {
+            "messages": [],
+            "contextualized_query": "",
+            "original_query": "",
+            "sources": {"articulos": [], "casos": []}
+        })
+
+        self.phase = 1
+
         return {
-            "answer": response["messages"][-1].content,
+            "answer": self._format_answer_with_sources(
+                response["messages"][-1].content,
+                response["sources"]
+            ),
             "sources": response["sources"],
             "contextualized_query": response["contextualized_query"],
             "original_query": response["original_query"],
         }
-    
+
+
+
+
+
     def _contextualize_question(self, query: str, chat_history: List[BaseMessage]) -> str:
         """
         Contextualiza la pregunta actual basándose en el historial
