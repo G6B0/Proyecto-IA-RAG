@@ -53,11 +53,15 @@ class LegalAgentInterface:
         print("\nJURISPRUDENCIA:")
         print("- '¿Hay casos similares donde hayan ganado los consumidores?'")
         print("- 'Busca fallos sobre devolución de dinero'")
+        print("\nCÓMO FUNCIONA:")
+        print("• CONSULTAS DIRECTAS: Preguntas específicas se responden inmediatamente")
+        print("  Ejemplo: '¿Qué derechos tengo si me entregan un producto defectuoso?'")
+        print("• CONSULTAS COMPLEJAS: Para redactar documentos, el sistema recopila información")
+        print("  Ejemplo: 'Quiero hacer una denuncia...' (usa '/finalizar' cuando termines)")
         print("\nCONSEJOS:")
-        print("- Sé específico en tus consultas")
+        print("- El agente detecta automáticamente el tipo de consulta")
         print("- Puedes hacer preguntas de seguimiento")
         print("- El agente recuerda la conversación anterior")
-        print("- Siempre cita las fuentes legales")
         print("="*50)
     
     def display_status(self):
@@ -230,20 +234,21 @@ class LegalAgentInterface:
                     print("="*60)
                     print(response["answer"])
                     
-                    # Mostrar interpretación solo si existe (fase 3)
-                    if response.get("contextualized_query") and response["original_query"] != response["contextualized_query"]:
-                        print(f"\nConsulta interpretada: {response['contextualized_query']}")
-
-                    # Mostrar fuentes si existen (fase 3)
-                    if response.get("sources"):
+                    # Mostrar fuentes si existen (solo en fase 3)
+                    if response.get("sources") and (response.get("sources", {}).get("articulos") or response.get("sources", {}).get("casos")):
+                        print("\n" + "-"*40)
+                        print("FUENTES CONSULTADAS")
+                        print("-"*40)
+                        
                         if response["sources"].get("articulos"):
-                            print("\nArtículos utilizados como fuente:")
+                            print("Artículos de ley:")
                             for art in response["sources"]["articulos"]:
-                                    print(f"- {art}")
+                                print(f"• {art}")
+                        
                         if response["sources"].get("casos"):
-                            print("\nCasos judiciales utilizados como fuente:")
+                            print("\nCasos judiciales:")
                             for caso in response["sources"]["casos"]:
-                                print(f"- {caso}")
+                                print(f"• {caso}")
                 
                 except KeyboardInterrupt:
                     print("\n\nSaliendo del programa...")

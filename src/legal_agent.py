@@ -69,12 +69,19 @@ class LegalAgent:
         if not self.session_initialized:
             raise RuntimeError("Agente no inicializado. Llama a initialize() primero")
 
-        print(f"\nProcesando consulta (fase {self.phase}): {query}")
-
         # Comando para ejecutar RAG
         if query.lower().strip() == "/finalizar":
             self.phase = 3
             return self._execute_phase_3()
+        
+        # Detectar automáticamente el tipo de consulta
+        query_type = self._classify_query(query)
+        
+        if query_type == "direct":
+            print(f"\nProcesando consulta directa: {query}")
+            return self._process_direct_query(query)
+        else:
+            print(f"\nProcesando consulta compleja (fase {self.phase}): {query}")
         
         if self.phase == 1:
             # Guardar directamente el mensaje en el historial del grafo
@@ -122,10 +129,7 @@ class LegalAgent:
         self.phase = 1
 
         return {
-            "answer": self._format_answer_with_sources(
-                response["messages"][-1].content,
-                response["sources"]
-            ),
+            "answer": response["messages"][-1].content,
             "sources": response["sources"],
             "contextualized_query": response["contextualized_query"],
             "original_query": response["original_query"],
@@ -364,3 +368,147 @@ class LegalAgent:
             str: Thread ID actual
         """
         return self.current_thread_id
+    
+    def _classify_query(self, query: str) -> str:
+        """
+        Clasifica automáticamente el tipo de consulta
+        
+        Args:
+            query: Consulta del usuario
+            
+        Returns:
+            str: "direct" para consultas directas, "complex" para consultas complejas
+        """
+        import unicodedata
+        
+        # Normalizar texto: quitar acentos y convertir a minúsculas
+        def normalize_text(text):
+            # Remover acentos
+            text = unicodedata.normalize('NFD', text)
+            text = ''.join(char for char in text if unicodedata.category(char) != 'Mn')
+            return text.lower().strip()
+        
+        query_normalized = normalize_text(query)
+        
+        # Patrones para consultas directas (preguntas específicas sobre la ley)
+        direct_patterns = [
+            "que derechos tengo",      # Sin acento
+            "cuanto tiempo tengo",     # Sin acento
+            "que dice el articulo",    # Sin acento
+            "puedo devolver",
+            "puedo reclamar",
+            "es legal",
+            "esta permitido",          # Sin acento
+            "cual es el plazo",        # Sin acento
+            "que establece",           # Sin acento
+            "como funciona",           # Sin acento
+            "donde dice",              # Sin acento
+            "que pasa si",             # Sin acento
+            "tengo derecho a",
+            "puede la empresa",
+            "debe la empresa",
+            "cuales son mis derechos", # Sin acento
+            "que opciones tengo",      # Sin acento
+            "es obligatorio",
+            "derechos tengo",          # Patrón más amplio
+            "tiempo tengo para",       # Patrón más amplio
+            "puedo hacer",
+            "debo hacer",
+            "derecho a"
+        ]
+        
+        # Patrones para consultas complejas (redacción de documentos/casos específicos)
+        complex_patterns = [
+            "quiero redactar",
+            "necesito ayuda para",
+            "me paso",              # Sin acento
+            "me vendieron",
+            "compre",               # Sin acento
+            "contrate",             # Sin acento
+            "la empresa me",
+            "el vendedor",
+            "quiero demandar",
+            "quiero hacer una denuncia",
+            "necesito hacer un reclamo",
+            "me estafaron",
+            "me cobraron",
+            "no me devolvieron",
+            "quiero denunciar"
+        ]
+        
+        # Verificar patrones de consultas directas primero (más específicos)
+        for pattern in direct_patterns:
+            if pattern in query_normalized:
+                return "direct"
+        
+        # Verificar patrones de consultas complejas
+        complex_patterns_normalized = [normalize_text(pattern) for pattern in complex_patterns]
+        for pattern in complex_patterns_normalized:
+            if pattern in query_normalized:
+                return "complex"
+        
+        # Si empieza con interrogación o contiene palabras clave de pregunta, probablemente es directa
+        question_words = ["que", "cual", "cuando", "como", "donde", "por que", "puedo", "debo"]  # Sin acentos
+        if query_normalized.startswith("¿") or query.startswith("¿") or any(word in query_normalized.split()[:3] for word in question_words):
+            return "direct"
+        
+        # Por defecto, tratar como compleja para mantener el flujo actual
+        return "complex"
+    
+    def _process_direct_query(self, query: str) -> Dict[str, Any]:
+        """
+        Procesa directamente una consulta sin usar el sistema de fases
+        
+        Args:
+            query: Consulta del usuario
+            
+        Returns:
+            Dict: Respuesta directa del RAG
+        """
+        try:
+            # Obtener historial actual para contexto
+            config = {"configurable": {"thread_id": self.current_thread_id}}
+            state = self.app.get_state(config)
+            messages = list(state.values.get("messages", []))
+            
+            # Agregar la nueva consulta al historial
+            human_message = HumanMessage(content=query)
+            messages.append(human_message)
+            
+            # Contextualizar la consulta
+            contextualized_query = self._contextualize_question(query, messages[:-1])
+            
+            # Generar respuesta usando RAG
+            rag_response = self.rag_system.generate_response(
+                contextualized_query,
+                self._format_message_history(messages[:-1])
+            )
+            
+            # Crear respuesta AI y actualizarla en el estado
+            ai_message = AIMessage(content=rag_response["answer"])
+            messages.append(ai_message)
+            
+            # Actualizar estado con la conversación completa
+            updated_state = {
+                "messages": messages,
+                "contextualized_query": contextualized_query,
+                "original_query": query,
+                "sources": rag_response["sources"]
+            }
+            self.app.update_state(config, updated_state)
+            
+            return {
+                "answer": rag_response["answer"],
+                "sources": rag_response["sources"],
+                "contextualized_query": contextualized_query,
+                "original_query": query
+            }
+            
+        except Exception as e:
+            print(f"Error procesando consulta directa: {e}")
+            return {
+                "answer": "Lo siento, ocurrió un error al procesar tu consulta. Por favor, intenta nuevamente.",
+                "sources": {"articulos": [], "casos": []},
+                "contextualized_query": query,
+                "original_query": query
+            }
